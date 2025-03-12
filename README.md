@@ -8,10 +8,6 @@
 
 ![teaser](assets/teaser.jpg)
 
-## Pipeline
-
-![pipeline](assets/pipeline.jpg)
-
 ### Ref-GS
 
 Our complete Ref-GS code is coming soon, stay tuned!
