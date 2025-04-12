@@ -23,7 +23,6 @@ from utils.color_utils import *
 from utils.sph_utils import *
 
 DIR="result/"
-
 use_feature = True
 
 
