@@ -49,6 +49,8 @@ You may need to modify the path in `train.sh`
 ## ✍️ Test
 We provide simple jupyter notebooks `notebook/test.ipynb` to explore the model.
 
+For mesh extraction, we adopt the same method as used in [2DGS](https://surfsplatting.github.io/).
+
 ## 🫡 Acknowledgments
 
 This work is built on many amazing research works and open-source projects,
