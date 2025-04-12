@@ -1,0 +1,5 @@
+# ninja log v5
+2	10667	1709648827000000000	/home/ud202381473/jupyterlab/gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-310/simple_knn.o	da4561e5ff524bf0
+2	16869	1709648834000000000	/home/ud202381473/jupyterlab/gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-310/ext.o	c39409a69c8f73ff
+2	46309	1709648863000000000	/home/ud202381473/jupyterlab/gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-310/spatial.o	40aa13ffe666803
+343	17038	1710929663000000000	/home/ud202381473/jupyterlab/gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-310/ext.o	c39409a69c8f73ff

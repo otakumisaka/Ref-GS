@@ -1,0 +1,7 @@
+# ninja log v5
+1	10603	1704302268000000000	/home/ud202381473/jupyterlab/gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-37/simple_knn.o	2554f93e2a7bab5f
+1	21809	1704302279000000000	/home/ud202381473/jupyterlab/gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-37/ext.o	934015ff7a80098f
+1	46194	1704302303000000000	/home/ud202381473/jupyterlab/gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-37/spatial.o	22d910c5acfa39be
+233	14760	1744439827000000000	/home/ud202381473/jupyterlab/gaussian-splatting/3DGS/2d-gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-37/simple_knn.o	263726bb07ae80e9
+233	84050	1744439896000000000	/home/ud202381473/jupyterlab/gaussian-splatting/3DGS/2d-gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-37/ext.o	3d4fc3dc13fde533
+233	108717	1744439921000000000	/home/ud202381473/jupyterlab/gaussian-splatting/3DGS/2d-gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-37/spatial.o	605264e7bbc35c2b
