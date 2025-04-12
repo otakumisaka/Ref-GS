@@ -15,6 +15,11 @@
 conda create -n ref_gs python=3.7.16
 conda activate ref_gs
 pip install -r requirements.txt
+
+pip install submodules/diff-surfel-rasterization-real
+pip install submodules/diff-surfel-rasterization
+pip install submodules/diff-surfel-2dgs
+pip install submodules/simple-knn
 ```
 
 ## 📦 Dataset
