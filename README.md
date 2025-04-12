@@ -8,20 +8,47 @@
 
 ![teaser](assets/teaser.jpg)
 
-### Ref-GS
+## ⚙️ Setup
 
-Our complete Ref-GS code is coming soon, stay tuned!
+### Install Environment via Anaconda (Recommended)
+```bash
+conda create -n ref_gs python=3.7.16
+conda activate ref_gs
+pip install -r requirements.txt
+```
 
-## Acknowledgments
+## 📦 Dataset
+We mainly test our method on [Shiny Blender Synthetic](https://storage.googleapis.com/gresearch/refraw360/ref.zip), [Shiny Blender Real](https://storage.googleapis.com/gresearch/refraw360/ref_real.zip), [Glossy Synthetic](https://liuyuan-pal.github.io/NeRO/) and [NeRF Synthetic dataset](https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1). Please run the script `nero2blender.py` to convert the format of the Glossy Synthetic dataset.
+
+Put them under the `data` folder:
+```bash
+data
+└── refnerf
+    └── car
+    └── toaster
+└── nerf_synthetic
+    └── hotdog
+    └── lego
+```
+
+## 🏃 Training
+We provide the script to test our code on each scene of datasets. Just run:
+```
+sh train.sh
+```
+You may need to modify the path in `train.sh`
+
+## 🫡 Acknowledgments
 
 This work is built on many amazing research works and open-source projects,
 
 - [NeRF-Casting: Improved View-Dependent Appearance with Consistent Reflections](https://dorverbin.github.io/nerf-casting/)
+- [3D Gaussian Splatting with Deferred Reflection](https://github.com/gapszju/3DGS-DR/tree/main)
 - [2DGS: 2D Gaussian Splatting for Geometrically Accurate Radiance Fields](https://surfsplatting.github.io/)
 
 We are grateful to the authors for releasing their code.
 
-## Citation
+## 📜 Citation
 
 If you find our work useful in your research, please consider giving a star :star: and citing the following paper :pencil:.
 
