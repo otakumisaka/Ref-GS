@@ -3,7 +3,7 @@
 ## [Project Page](https://ref-gs.github.io/) | [Paper](https://arxiv.org/pdf/2412.00905) | [arXiv](https://arxiv.org/abs/2412.00905)
 
 > Ref-GS : Directional Factorization for 2D Gaussian Splatting<br>
-> [Youjia Zhang](https://ref-gs.github.io/), [Anpei Chen](https://apchenstu.github.io/), [Yumin Wan](https://ref-gs.github.io/), [Zikai Song](https://skyesong38.github.io/), [Junqing Yu](https://scholar.google.com/citations?hl=zh-CN&user=_UjqBfcAAAAJ), [Yawei Luo](https://scholar.google.com/citations?hl=zh-CN&user=pnVwaGsAAAAJ), [Wei Yang](https://weiyang-hust.github.io/)<br>
+> [Youjia Zhang](https://youjiazhang.github.io/), [Anpei Chen](https://apchenstu.github.io/), [Yumin Wan](https://ref-gs.github.io/), [Zikai Song](https://skyesong38.github.io/), [Junqing Yu](https://scholar.google.com/citations?hl=zh-CN&user=_UjqBfcAAAAJ), [Yawei Luo](https://scholar.google.com/citations?hl=zh-CN&user=pnVwaGsAAAAJ), [Wei Yang](https://weiyang-hust.github.io/)<br>
 > CVPR 2025
 
 ![teaser](assets/teaser.jpg)
@@ -15,6 +15,14 @@
 conda create -n ref_gs python=3.7.16
 conda activate ref_gs
 pip install -r requirements.txt
+
+pip install submodules/diff-surfel-rasterization-real
+pip install submodules/diff-surfel-rasterization
+pip install submodules/diff-surfel-2dgs
+pip install submodules/simple-knn
+
+git clone https://github.com/NVlabs/nvdiffrast
+pip install .
 ```
 
 ## 📦 Dataset
@@ -37,6 +45,11 @@ We provide the script to test our code on each scene of datasets. Just run:
 sh train.sh
 ```
 You may need to modify the path in `train.sh`
+
+## ✍️ Test
+We provide simple jupyter notebooks `notebook/test.ipynb` to explore the model.
+
+For mesh extraction, we adopt the same method as used in [2DGS](https://surfsplatting.github.io/).
 
 ## 🫡 Acknowledgments
 
@@ -61,6 +74,6 @@ If you find our work useful in your research, please consider giving a star :sta
 }
 ```
 
-## Contact
+## ✉️ Contact
 
 For feedback, questions, or press inquiries please contact [Youjia Zhang](Youjiazhang@hust.edu.cn).
