@@ -46,6 +46,9 @@ sh train.sh
 ```
 You may need to modify the path in `train.sh`
 
+## ✍️ Test
+We provide simple jupyter notebooks `notebook/test.ipynb` to explore the model.
+
 ## 🫡 Acknowledgments
 
 This work is built on many amazing research works and open-source projects,
