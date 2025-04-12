@@ -69,6 +69,6 @@ If you find our work useful in your research, please consider giving a star :sta
 }
 ```
 
-## Contact
+## ✉️ Contact
 
 For feedback, questions, or press inquiries please contact [Youjia Zhang](Youjiazhang@hust.edu.cn).
