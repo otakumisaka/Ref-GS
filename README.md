@@ -20,6 +20,9 @@ pip install submodules/diff-surfel-rasterization-real
 pip install submodules/diff-surfel-rasterization
 pip install submodules/diff-surfel-2dgs
 pip install submodules/simple-knn
+
+git clone https://github.com/NVlabs/nvdiffrast
+pip install .
 ```
 
 ## 📦 Dataset
