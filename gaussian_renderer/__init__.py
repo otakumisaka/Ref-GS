@@ -517,7 +517,7 @@ def render_real(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
 
     gs_albedo = pc.get_albedo
     gs_roughness = pc.get_roughness
-    gs_mask = pc.gs_mask
+    gs_mask = pc.get_mask
     gs_feature = pc.get_language_feature
     
     gs_in = gs_mask * 0 + 1.0

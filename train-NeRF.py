@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import sys
@@ -23,13 +23,13 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
-
+    
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, dataset)
     
-    scene = Scene(dataset, gaussians, resolution_scales=[1.0])
+    scene = Scene(dataset, gaussians, resolution_scales=[1.0,])
     
     gaussians.training_setup(opt)
     
@@ -66,10 +66,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         viewpoint_cam = viewpoint_stack[data_idx]
         
-        bg = torch.rand((3), device="cuda")
+        bg = torch.rand((3), device="cuda") # NeRF
         
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, iteration=iteration)
+        render_pkg = render_nerf(viewpoint_cam, gaussians, pipe, bg, iteration=iteration)
         
+        image = render_pkg["render"]
         viewspace_point_tensor = render_pkg["viewspace_points"]
         visibility_filter = render_pkg["visibility_filter"]
         radii = render_pkg["radii"]
@@ -84,11 +85,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss_pbr = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(pbr_rgb, gt_image))
         loss += loss_pbr
 
-        if iteration < 3000:
-            gt_mask = viewpoint_cam.original_image.cuda()[3:,...]
-            alpha_loss = binary_cross_entropy(render_pkg["rend_alpha"], gt_mask)
-            loss += alpha_loss
+        gt_mask = viewpoint_cam.original_image.cuda()[3:,...]
+        alpha_loss = binary_cross_entropy(render_pkg["rend_alpha"], gt_mask)
+        loss += alpha_loss
 
+        if dataset.gsrgb_loss:
+            Ll1 = l1_loss(image, gt_image)
+            loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            loss += loss_rgb
+            
         # regularization
         lambda_normal = 0.05 if iteration > 0 else 0.0
         lambda_dist = 0.0 if iteration > 0 else 0.0
@@ -111,7 +116,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
-
 
             if iteration % 10 == 0:
                 loss_dict = {
@@ -141,7 +145,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
-                    
+
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
@@ -159,8 +163,8 @@ def prepare_output_and_logger(args):
             unique_str=os.getenv('OAR_JOB_ID')
         else:
             unique_str = str(uuid.uuid4())
-
-        args.model_path = os.path.join("./output/refnerf/", dataset_name)
+            
+        args.model_path = os.path.join("./output/nerf_synthetic/", dataset_name)
         
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
@@ -203,6 +207,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 
         torch.cuda.empty_cache()
 
+        
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")

@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import sys
@@ -23,12 +23,12 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
-
+    
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, dataset)
-    
+
     scene = Scene(dataset, gaussians, resolution_scales=[1.0])
     
     gaussians.training_setup(opt)
@@ -53,6 +53,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    
+    dataset_name = dataset.source_path.split('/')[-1]
+
+    ENV_CENTER = torch.tensor([float(c) for c in dataset.env_scope_center], device='cuda')
+    ENV_RADIUS = dataset.env_scope_radius
+    XYZ = [int(float(c)) for c in dataset.xyz_axis]
+    
+    print(ENV_CENTER, ENV_RADIUS, XYZ)
+        
     for iteration in range(first_iter, opt.iterations + 1):        
 
         iter_start.record()
@@ -61,37 +70,53 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
-
-        data_idx = np.random.randint(len(viewpoint_stack))
         
+        data_idx = np.random.randint(len(viewpoint_stack))
         viewpoint_cam = viewpoint_stack[data_idx]
         
-        bg = torch.rand((3), device="cuda")
+        bg = torch.zeros((3), device="cuda") # 真实数据集
         
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, iteration=iteration)
+        ITER = dataset.init_until_iter
         
+        render_pkg = render_real(viewpoint_cam, gaussians, pipe, bg, iteration=iteration, ITER=ITER, ENV_CENTER=ENV_CENTER, ENV_RADIUS=ENV_RADIUS, XYZ=XYZ)
+        
+        image = render_pkg["render"]
         viewspace_point_tensor = render_pkg["viewspace_points"]
         visibility_filter = render_pkg["visibility_filter"]
         radii = render_pkg["radii"]
+        ref_w = render_pkg["ref_w"]
+        out_w = render_pkg["out_w"]
         
         gt_image = viewpoint_cam.original_image.cuda()
-        gt_image = gt_image[:3,...] * gt_image[3:,...] + (1-gt_image[3:,...]) * bg[:, None, None]
             
         loss = 0.0
         
-        pbr_rgb = render_pkg["pbr_rgb"] * render_pkg["rend_alpha"] + (1-render_pkg["rend_alpha"]) * bg[:, None, None]
-        Ll1 = l1_loss(pbr_rgb, gt_image)
-        loss_pbr = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(pbr_rgb, gt_image))
-        loss += loss_pbr
-
-        if iteration < 3000:
-            gt_mask = viewpoint_cam.original_image.cuda()[3:,...]
-            alpha_loss = binary_cross_entropy(render_pkg["rend_alpha"], gt_mask)
-            loss += alpha_loss
-
+        if iteration > ITER:
+            pbr_rgb = render_pkg["pbr_rgb"]
+            Ll1 = l1_loss(pbr_rgb, gt_image)
+            loss_pbr = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(pbr_rgb, gt_image))
+            loss += loss_pbr
+            
+            Ll1 = l1_loss(image*out_w, gt_image*out_w)
+            loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image*out_w, gt_image*out_w))
+            loss += loss_rgb
+            
+            gt_mask = torch.ones(render_pkg["rend_alpha"].shape).cuda() * ref_w
+            pr_mask = render_pkg["rend_alpha"] * ref_w
+            alpha_loss = binary_cross_entropy(pr_mask, gt_mask)
+            loss += alpha_loss * dataset.alpha_weight
+            
+            density_loss = entropy_loss(gaussians.get_opacity[visibility_filter])
+            loss += density_loss * 0.001
+            
+        else:
+            Ll1 = l1_loss(image, gt_image)
+            loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            loss += loss_rgb
+        
         # regularization
-        lambda_normal = 0.05 if iteration > 0 else 0.0
-        lambda_dist = 0.0 if iteration > 0 else 0.0
+        lambda_normal = 0.05 if iteration > ITER else 0.0
+        lambda_dist = 0.0 if iteration > ITER else 0.0
         
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
@@ -112,7 +137,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
 
-
             if iteration % 10 == 0:
                 loss_dict = {
                     "Loss": f"{ema_loss_for_log:.{5}f}",
@@ -126,6 +150,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration == opt.iterations:
                 progress_bar.close()
 
+            # training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -138,10 +163,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold)
-                
+                    
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
-                    
+                    print(gaussians._opacity.data[torch.isnan(gaussians._opacity.data.mean(dim=-1))].shape)
+
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
@@ -160,7 +186,8 @@ def prepare_output_and_logger(args):
         else:
             unique_str = str(uuid.uuid4())
 
-        args.model_path = os.path.join("./output/refnerf/", dataset_name)
+        args.model_path = os.path.join("./output/ref-real/", dataset_name)
+        
         
     # Set up output folder
     print("Output folder: {}".format(args.model_path))

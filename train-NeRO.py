@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import sys
@@ -68,6 +68,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         bg = torch.rand((3), device="cuda")
         
+        ITER = dataset.init_until_iter
+        
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, iteration=iteration)
         
         viewspace_point_tensor = render_pkg["viewspace_points"]
@@ -79,10 +81,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             
         loss = 0.0
         
-        pbr_rgb = render_pkg["pbr_rgb"] * render_pkg["rend_alpha"] + (1-render_pkg["rend_alpha"]) * bg[:, None, None]
-        Ll1 = l1_loss(pbr_rgb, gt_image)
-        loss_pbr = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(pbr_rgb, gt_image))
-        loss += loss_pbr
+        if iteration > ITER:
+            pbr_rgb = render_pkg["pbr_rgb"] * render_pkg["rend_alpha"] + (1-render_pkg["rend_alpha"]) * bg[:, None, None]
+            Ll1 = l1_loss(pbr_rgb, gt_image)
+            loss_pbr = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(pbr_rgb, gt_image))
+            loss += loss_pbr
 
         if iteration < 3000:
             gt_mask = viewpoint_cam.original_image.cuda()[3:,...]
@@ -160,7 +163,7 @@ def prepare_output_and_logger(args):
         else:
             unique_str = str(uuid.uuid4())
 
-        args.model_path = os.path.join("./output/refnerf/", dataset_name)
+        args.model_path = os.path.join("./output/GlossySynthetic/", dataset_name)
         
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
