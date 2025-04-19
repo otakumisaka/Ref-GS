@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import sys
