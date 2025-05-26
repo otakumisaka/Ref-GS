@@ -22,9 +22,15 @@ from utils.graphics_utils import fov2focal
 from utils.color_utils import *
 from utils.sph_utils import *
 
+# Debug
+import os
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
+
+
 DIR="result/"
 use_feature = True
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_outside_msk(xyz, ENV_CENTER, ENV_RADIUS):
     return torch.sum((xyz - ENV_CENTER[None])**2, dim=-1) > ENV_RADIUS**2
@@ -84,9 +90,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     gs_albedo = pc.get_albedo
     gs_roughness = pc.get_roughness
     gs_feature = pc.get_language_feature
+    gs_ior = pc.get_ior
     
-    input_ts = torch.cat([gs_roughness, gs_feature], dim=-1)
-    
+    # print(f"pc.gs_ior: {gs_ior}")
+
+    # roughness and feature set in Model? Every point refers to a roughness/feature value
+    # we view ior as one of its features
+    input_ts = torch.cat([gs_roughness, gs_feature, gs_ior], dim=-1)
+    print(f"pc.input_ts: {input_ts.shape}, pc.gsfeat_dim: {pc.gsfeat_dim}")
+    print(f"gs_roughness: {gs_roughness.shape}, gs_feature: {gs_feature.shape}, gs_ior: {gs_ior.shape}")
     albedo_map, out_ts, radii, allmap = rasterizer_black(
         means3D = means3D,
         means2D = means2D,
@@ -102,6 +114,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     render_alpha = allmap[1:2]
 
     render_normal = allmap[2:5]
+    # to world coordinate
     render_normal = (render_normal.permute(1,2,0) @ (viewpoint_camera.world_view_transform[:3,:3].T)).permute(2,0,1)
     render_normal = F.normalize(render_normal, dim=0)
 
@@ -121,17 +134,21 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     surf_normal = surf_normal * (render_alpha).detach()
 
     #####################################################################################################################
-    
+    # reflection 
     viewdirs = viewpoint_camera.rays_d
     normals = render_normal.permute(1,2,0)
     wo = F.normalize(reflect(-viewdirs, normals), dim=-1)
     
+    #refraction
+    
     out_ts = out_ts.permute(1,2,0)
-    
+
     albedo_map = albedo_map.permute(1,2,0)
-    roughness_map = out_ts[..., :1]
-    feature_map = out_ts[..., 1:]
-    
+    roughness_map = out_ts[..., 0:1]
+    feature_map = out_ts[..., 1:2]
+    ior_map = out_ts[..., 2:3]
+    print(f"pc.feature_map: {feature_map.shape}, pc.ior_map: {ior_map.shape}, pc.albedo_map: {albedo_map.shape}, pc.roughness_map: {roughness_map.shape}")
+
     #####################################################################################################################
     
     with torch.no_grad():
@@ -141,6 +158,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     normals = normals.reshape(-1, 3)[select_index]
     roughness_map = roughness_map.reshape(-1, 1)[select_index]
     albedo_map = albedo_map.reshape(-1, 3)[select_index]
+    ior_map = ior_map.reshape(-1, 1)[select_index]
     
     feature_map = feature_map.reshape(-1, pc.gsfeat_dim)[select_index]
     feature_map = F.normalize(feature_map, dim=-1)
@@ -148,8 +166,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     feature_map = feature_map.reshape(-1, 1, pc.gsfeat_dim)
     feature_dirc = feature_map.reshape(-1, pc.gsfeat_dim)
     
+    print(f"feature_map.shape")
+
     ''' Sph-Mip '''
-    wo_xy = (cart2sph(wo.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).cuda())[..., [1,0]]
+    wo_xy = (cart2sph(wo.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]]
     wo_xyz = torch.stack([wo_xy[:, None, :]], dim=0,)
     
     spec_level = roughness_map.reshape(-1, 1)
@@ -160,6 +180,57 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     #####################################################################################################################
     
+        # 计算入射方向和折射方向
+    incident_dir = viewdirs.reshape(-1, 3)[select_index]  # 从相机到表面的方向
+    surface_normals = normals  # 表面法线
+    
+    # 折射率处理：限制在合理范围内，避免极端值
+    ior_values = torch.clamp(ior_map, min=1.0, max=3.0)
+    
+    # from incident to exitant
+    # eta1 / eta2
+    eta = 1.0 / ior_values
+    
+    wt, total_reflection = refract(incident_dir, surface_normals, eta)
+    
+    cos_theta_i = torch.clamp(-torch.sum(incident_dir * surface_normals, dim=-1, keepdim=True), 0.0, 1.0)
+    
+    # Fresnel ratio 
+    f0 = ((ior_values - 1.0) / (ior_values + 1.0)) ** 2  # 垂直入射时的反射率
+    fresnel = fresnel_schlick(cos_theta_i, f0)
+    
+    # Sph-Mip for refraction
+    # we know wt must be non-zero if it is not total internal reflection
+    valid_refraction = ~total_reflection.squeeze(-1)
+    
+    if valid_refraction.sum() > 0:
+        wt_valid = wt[valid_refraction]
+        wt_xy = (cart2sph(wt_valid.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / 
+                 torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]]
+        wt_xyz = torch.stack([wt_xy[:, None, :]], dim=0)
+        
+        # like spec_level
+        refract_level = roughness_map[valid_refraction].reshape(-1, 1)
+        refract_feat = pc.dir_encoding(wt_xyz, refract_level.view(-1, 1), index=0).reshape(-1, pc.sph_dim)
+        
+        refract_feat_wrap = refract_feat.reshape(-1, pc.sph_dim, 1)
+        refract_feat_dirc = refract_feat.reshape(-1, pc.sph_dim)
+        
+        # 折射光照计算
+        feature_map_valid = feature_map[valid_refraction]
+        refract_wrap_input = (refract_feat_wrap @ feature_map_valid).reshape(-1, pc.sph_dim * pc.gsfeat_dim)
+        refract_input_mlp = torch.cat([refract_wrap_input, refract_feat_dirc], -1)
+        
+        # 使用相同的MLP或可以定义专门的折射MLP
+        refract_mlp_output = pc.light_mlp(refract_input_mlp).float()
+        refract_light_valid = torch.exp(torch.clamp(refract_mlp_output, max=5.0))
+        
+        # 创建完整的折射光数组
+        refract_light = torch.zeros_like(spec_light)
+        refract_light[valid_refraction] = refract_light_valid
+    else:
+        refract_light = torch.zeros_like(spec_light)
+        
     # Specular color
     wrap_input = (spec_feat_wrap @ feature_map).reshape(-1, pc.sph_dim*pc.gsfeat_dim)
     input_mlp = torch.cat([wrap_input, spec_feat_dirc], -1)
@@ -169,13 +240,21 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # Diffuse color
     diff_light = albedo_map
     
-    pbr_rgb = spec_light + diff_light        
+    # Refraction color
+    transparency = torch.clamp((ior_values - 1.0) / 2.0, 0.0, 1.0)  
+    
+    reflection_contrib = fresnel * spec_light
+    refraction_contrib = (1.0 - fresnel) * transparency * refract_light
+    diffuse_contrib = (1.0 - transparency) * diff_light
+    
+    # pbr_rgb = spec_light + diff_light   
+    pbr_rgb = reflection_contrib + refraction_contrib + diffuse_contrib     
     pbr_rgb = linear2srgb(pbr_rgb)
     pbr_rgb = torch.clamp(pbr_rgb, min=0., max=1.)
     
     #####################################################################################################################
     
-    output_rgb = torch.zeros(image_height, image_width, 3).cuda()
+    output_rgb = torch.zeros(image_height, image_width, 3).to(device)
     output_rgb.reshape(-1, 3)[select_index] = pbr_rgb
     output_rgb = output_rgb.permute(2,0,1)
     
@@ -196,11 +275,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     if iteration % 500 == 0:
         with torch.no_grad():
             
-            output_spec = torch.zeros(image_height, image_width, 3).cuda()
+            output_spec = torch.zeros(image_height, image_width, 3).to(device)
             output_spec.reshape(-1, 3)[select_index] = linear2srgb(spec_light)
             output_spec = output_spec.permute(2,0,1)
             
-            output_diff = torch.zeros(image_height, image_width, 3).cuda()
+            output_diff = torch.zeros(image_height, image_width, 3).to(device)
             output_diff.reshape(-1, 3)[select_index] = linear2srgb(diff_light)
             output_diff = output_diff.permute(2,0,1)
     
@@ -211,7 +290,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             torchvision.utils.save_image(surf_depth, DIR+"surf_depth.png")
             torchvision.utils.save_image((surf_normal+1)/2, DIR+"surf_normal.png")
             
-            gt_image_copy = viewpoint_camera.original_image.cuda()
+            gt_image_copy = viewpoint_camera.original_image.to(device)
             torchvision.utils.save_image(gt_image_copy, DIR+"gt_image.png")
             
             torchvision.utils.save_image(((out_ts[..., 1:].permute(2,0,1))[:3]+1)/2, DIR+"feature_image.png")
@@ -221,8 +300,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             torchvision.utils.save_image(output_spec, DIR+"spec_light.png")
             torchvision.utils.save_image(output_diff, DIR+"diff_light.png")
 
+    
     return rets
 
+# TODO: transmittance not updated now, I'm not sure whether this part ought to be updated
 def render_nerf(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, iteration=0):
     """
     Render the scene. 
@@ -368,7 +449,7 @@ def render_nerf(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
     feature_dirc = feature_map.reshape(-1, pc.gsfeat_dim)
     
     ''' Sph-Mip '''
-    wo_xy = (cart2sph(wo.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).cuda())[..., [1,0]]
+    wo_xy = (cart2sph(wo.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]]
     wo_xyz = torch.stack([wo_xy[:, None, :]], dim=0,)
     
     spec_level = roughness_map.reshape(-1, 1)
@@ -394,7 +475,7 @@ def render_nerf(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
     
     #####################################################################################################################
     
-    output_rgb = torch.zeros(image_height, image_width, 3).cuda()
+    output_rgb = torch.zeros(image_height, image_width, 3).to(device)
     output_rgb.reshape(-1, 3)[select_index] = pbr_rgb
     output_rgb = output_rgb.permute(2,0,1)
     
@@ -416,11 +497,11 @@ def render_nerf(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
         with torch.no_grad():
             torchvision.utils.save_image(rendered_image, DIR+"rendered_image.png")
             
-            output_spec = torch.zeros(image_height, image_width, 3).cuda()
+            output_spec = torch.zeros(image_height, image_width, 3).to(device)
             output_spec.reshape(-1, 3)[select_index] = linear2srgb(spec_light)
             output_spec = output_spec.permute(2,0,1)
             
-            output_diff = torch.zeros(image_height, image_width, 3).cuda()
+            output_diff = torch.zeros(image_height, image_width, 3).to(device)
             output_diff.reshape(-1, 3)[select_index] = linear2srgb(diff_light)
             output_diff = output_diff.permute(2,0,1)
     
@@ -431,7 +512,7 @@ def render_nerf(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
             torchvision.utils.save_image(surf_depth, DIR+"surf_depth.png")
             torchvision.utils.save_image((surf_normal+1)/2, DIR+"surf_normal.png")
             
-            gt_image_copy = viewpoint_camera.original_image.cuda()
+            gt_image_copy = viewpoint_camera.original_image.to(device)
             torchvision.utils.save_image(gt_image_copy, DIR+"gt_image.png")
             
             torchvision.utils.save_image(((out_ts[..., 1:].permute(2,0,1))[:3]+1)/2, DIR+"feature_image.png")
@@ -592,7 +673,7 @@ def render_real(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
         feature_dirc = feature_map.reshape(-1, pc.gsfeat_dim)
 
         ''' Specular env. feature '''
-        wo_xy = (cart2sph(wo.reshape(-1, 3)[..., XYZ])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).cuda())[..., [1,0]] 
+        wo_xy = (cart2sph(wo.reshape(-1, 3)[..., XYZ])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]] 
 
         wo_xyz = torch.stack([wo_xy[:, None, :]], dim=0,)
 
@@ -619,7 +700,7 @@ def render_real(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
 
         #####################################################################################################################
 
-        output_rgb = torch.zeros(image_height, image_width, 3).cuda()
+        output_rgb = torch.zeros(image_height, image_width, 3).to(device)
         output_rgb.reshape(-1, 3)[select_index] = pbr_rgb
         output_rgb = output_rgb.permute(2,0,1)
 
@@ -659,7 +740,7 @@ def render_real(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
             torchvision.utils.save_image(surf_depth, DIR+"surf_depth.png")
             torchvision.utils.save_image((surf_normal+1)/2, DIR+"surf_normal.png")
             
-            gt_image_copy = viewpoint_camera.original_image.cuda()
+            gt_image_copy = viewpoint_camera.original_image.to(device)
             torchvision.utils.save_image(gt_image_copy, DIR+"gt_image.png")
             
             torchvision.utils.save_image(((out_ts[..., 1:].permute(2,0,1))[:3]+1)/2, DIR+"feature_image.png")
@@ -669,11 +750,11 @@ def render_real(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
             torchvision.utils.save_image(out_ts[..., 6:7].repeat(1,1,3).permute(2,0,1), DIR+"out.png")
 
             if len(select_index) > 0:
-                output_spec = torch.zeros(image_height, image_width, 3).cuda()
+                output_spec = torch.zeros(image_height, image_width, 3).to(device)
                 output_spec.reshape(-1, 3)[select_index] = linear2srgb(spec_light)
                 output_spec = output_spec.permute(2,0,1)
 
-                output_diff = torch.zeros(image_height, image_width, 3).cuda()
+                output_diff = torch.zeros(image_height, image_width, 3).to(device)
                 output_diff.reshape(-1, 3)[select_index] = linear2srgb(diff_light)
                 output_diff = output_diff.permute(2,0,1)
 

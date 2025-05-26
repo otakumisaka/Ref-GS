@@ -105,6 +105,7 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.002
         self.encoding_lr = 0.002
         self.mlp_lr = 0.0005
+        self.ior_lr = 0.005
         
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2

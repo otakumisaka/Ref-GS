@@ -82,8 +82,12 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     W = gt_image.shape[2]
     H = gt_image.shape[1]    
+    
+    data_device = getattr(args, "data_device", "cpu")
     rays_o, rays_d = get_rays(W, H, cam_info.FovX, cam_info.FovY, cam_info.R, cam_info.T)
-    rays_d = F.normalize(rays_d.cuda(), dim=-1)
+    # rays_d = F.normalize(rays_d.cuda(), dim=-1)
+    rays_o = rays_o.to(data_device)
+    rays_d = F.normalize(rays_d.to(data_device), dim=-1)
     
     return Camera(
         colmap_id=cam_info.uid, 
