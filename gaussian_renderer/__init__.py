@@ -96,7 +96,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # roughness and feature set in Model? Every point refers to a roughness/feature value
     # we view ior as one of its features
-    input_ts = torch.cat([gs_roughness, gs_feature, gs_ior], dim=-1)
+    input_ts = torch.cat([gs_roughness, gs_ior, gs_feature], dim=-1)
     print(f"pc.input_ts: {input_ts.shape}, pc.gsfeat_dim: {pc.gsfeat_dim}")
     print(f"gs_roughness: {gs_roughness.shape}, gs_feature: {gs_feature.shape}, gs_ior: {gs_ior.shape}")
     albedo_map, out_ts, radii, allmap = rasterizer_black(
@@ -145,8 +145,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     albedo_map = albedo_map.permute(1,2,0)
     roughness_map = out_ts[..., 0:1]
-    feature_map = out_ts[..., 1:2]
-    ior_map = out_ts[..., 2:3]
+    ior_map = out_ts[..., 1:2]
+    feature_map = out_ts[..., 2:6]
     print(f"pc.feature_map: {feature_map.shape}, pc.ior_map: {ior_map.shape}, pc.albedo_map: {albedo_map.shape}, pc.roughness_map: {roughness_map.shape}")
 
     #####################################################################################################################
@@ -166,7 +166,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     feature_map = feature_map.reshape(-1, 1, pc.gsfeat_dim)
     feature_dirc = feature_map.reshape(-1, pc.gsfeat_dim)
     
-    print(f"feature_map.shape")
+    print(f"feature_map.shape:{feature_map.shape}, feature_dirc.shape: {feature_dirc.shape}")
 
     ''' Sph-Mip '''
     wo_xy = (cart2sph(wo.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]]
