@@ -92,13 +92,12 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     gs_feature = pc.get_language_feature
     gs_ior = pc.get_ior
     
-    # print(f"pc.gs_ior: {gs_ior}")
 
     # roughness and feature set in Model? Every point refers to a roughness/feature value
     # we view ior as one of its features
     input_ts = torch.cat([gs_roughness, gs_ior, gs_feature], dim=-1)
-    print(f"pc.input_ts: {input_ts.shape}, pc.gsfeat_dim: {pc.gsfeat_dim}")
-    print(f"gs_roughness: {gs_roughness.shape}, gs_feature: {gs_feature.shape}, gs_ior: {gs_ior.shape}")
+    # print(f"pc.input_ts: {input_ts.shape}, pc.gsfeat_dim: {pc.gsfeat_dim}")
+    # print(f"gs_roughness: {gs_roughness.shape}, gs_feature: {gs_feature.shape}, gs_ior: {gs_ior.shape}")
     albedo_map, out_ts, radii, allmap = rasterizer_black(
         means3D = means3D,
         means2D = means2D,
@@ -142,12 +141,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     #refraction
     
     out_ts = out_ts.permute(1,2,0)
-
+    # print(f"out_ts: {out_ts.shape}")
     albedo_map = albedo_map.permute(1,2,0)
     roughness_map = out_ts[..., 0:1]
     ior_map = out_ts[..., 1:2]
-    feature_map = out_ts[..., 2:6]
-    print(f"pc.feature_map: {feature_map.shape}, pc.ior_map: {ior_map.shape}, pc.albedo_map: {albedo_map.shape}, pc.roughness_map: {roughness_map.shape}")
+    feature_map = out_ts[..., 2:]
 
     #####################################################################################################################
     
@@ -166,7 +164,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     feature_map = feature_map.reshape(-1, 1, pc.gsfeat_dim)
     feature_dirc = feature_map.reshape(-1, pc.gsfeat_dim)
     
-    print(f"feature_map.shape:{feature_map.shape}, feature_dirc.shape: {feature_dirc.shape}")
+    # print(f"feature_map.shape:{feature_map.shape}, feature_dirc.shape: {feature_dirc.shape}")
 
     ''' Sph-Mip '''
     wo_xy = (cart2sph(wo.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]]
@@ -179,22 +177,23 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     spec_feat_dirc = spec_feat.reshape(-1, pc.sph_dim)
     
     #####################################################################################################################
+    # Specular color
+    wrap_input = (spec_feat_wrap @ feature_map).reshape(-1, pc.sph_dim*pc.gsfeat_dim)
+    input_mlp = torch.cat([wrap_input, spec_feat_dirc], -1)
+    mlp_output = pc.light_mlp(input_mlp).float()
+    spec_light = torch.exp(torch.clamp(mlp_output, max=5.0))
     
-        # 计算入射方向和折射方向
+    # Refraction color
     incident_dir = viewdirs.reshape(-1, 3)[select_index]  # 从相机到表面的方向
     surface_normals = normals  # 表面法线
     
     # 折射率处理：限制在合理范围内，避免极端值
-    ior_values = torch.clamp(ior_map, min=1.0, max=3.0)
-    
+    ior_values = torch.clamp(ior_map, min=1.0, max=3.0)    
     # from incident to exitant
     # eta1 / eta2
     eta = 1.0 / ior_values
-    
     wt, total_reflection = refract(incident_dir, surface_normals, eta)
-    
     cos_theta_i = torch.clamp(-torch.sum(incident_dir * surface_normals, dim=-1, keepdim=True), 0.0, 1.0)
-    
     # Fresnel ratio 
     f0 = ((ior_values - 1.0) / (ior_values + 1.0)) ** 2  # 垂直入射时的反射率
     fresnel = fresnel_schlick(cos_theta_i, f0)
@@ -231,11 +230,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         refract_light = torch.zeros_like(spec_light)
         
-    # Specular color
-    wrap_input = (spec_feat_wrap @ feature_map).reshape(-1, pc.sph_dim*pc.gsfeat_dim)
-    input_mlp = torch.cat([wrap_input, spec_feat_dirc], -1)
-    mlp_output = pc.light_mlp(input_mlp).float()
-    spec_light = torch.exp(torch.clamp(mlp_output, max=5.0))
     
     # Diffuse color
     diff_light = albedo_map
@@ -248,6 +242,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     diffuse_contrib = (1.0 - transparency) * diff_light
     
     # pbr_rgb = spec_light + diff_light   
+    # using following calculation will take twice or 4/3 the time 
     pbr_rgb = reflection_contrib + refraction_contrib + diffuse_contrib     
     pbr_rgb = linear2srgb(pbr_rgb)
     pbr_rgb = torch.clamp(pbr_rgb, min=0., max=1.)

@@ -676,11 +676,12 @@ class GaussianModel:
         new_roughness = self._roughness[selected_pts_mask]
         
         new_language_feature = self._language_feature[selected_pts_mask]
+        new_ior = self._ior[selected_pts_mask]
 
         self.densification_postfix(
             new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation,
             new_albedo, new_mask, new_roughness,
-            new_language_feature
+            new_language_feature, new_ior
         )
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):

@@ -93,6 +93,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         lambda_normal = 0.05 if iteration > 0 else 0.0
         lambda_dist = 0.0 if iteration > 0 else 0.0
         
+        # Normal Lost: if rend_normal is closer to surf_normal, then normal_error is smaller
+        # Dist Lost: more about the value of rend_dist
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
         surf_normal = render_pkg['surf_normal']
