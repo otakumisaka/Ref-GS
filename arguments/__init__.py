@@ -105,7 +105,9 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.002
         self.encoding_lr = 0.002
         self.mlp_lr = 0.0005
+        self.refr_mlp_lr = 0.0005 # equal normal reflection
         self.ior_lr = 0.005
+        self.transparency_lr = 0.003
         
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2

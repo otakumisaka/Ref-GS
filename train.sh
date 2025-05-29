@@ -15,42 +15,42 @@
 # python3 train.py -s data/refnerf/ball --eval --run_dim 256 --albedo_bias 0
 # python3 train.py -s data/refnerf/teapot --eval --run_dim 256 --albedo_bias 0
 # python3 train.py -s data/refnerf/coffee --eval --run_dim 256 --albedo_bias 0 --albedo_lr 0.002
-# python train.py -s data/refnerf/toaster --eval --run_dim 256 --albedo_bias 0
+python train.py -s data/refnerf/toaster --eval --run_dim 256 --albedo_bias 0
 
 # concurrently run the following commands in different terminals
-log_dir="logs/refnerf/"
-gpus="1 2 3 4 5 6 7"  # 改用空格分隔的字符串，而不是数组
-mkdir -p "$log_dir"
+# log_dir="logs/refnerf/"
+# gpus="1 2 3 4 5 6 7"  # 改用空格分隔的字符串，而不是数组
+# mkdir -p "$log_dir"
 
-# 任务列表（用换行符或分号分隔）
-tasks="
--s data/refnerf/helmet --eval --run_dim 256 --albedo_bias 0
--s data/refnerf/car --eval --run_dim 256 --albedo_bias 0
--s data/refnerf/ball --eval --run_dim 256 --albedo_bias 0
--s data/refnerf/teapot --eval --run_dim 256 --albedo_bias 0
--s data/refnerf/coffee --eval --run_dim 256 --albedo_bias 0 --albedo_lr 0.002
-"
+# # 任务列表（用换行符或分号分隔）
+# tasks="
+# -s data/refnerf/helmet --eval --run_dim 256 --albedo_bias 0
+# -s data/refnerf/car --eval --run_dim 256 --albedo_bias 0
+# -s data/refnerf/ball --eval --run_dim 256 --albedo_bias 0
+# -s data/refnerf/teapot --eval --run_dim 256 --albedo_bias 0
+# -s data/refnerf/coffee --eval --run_dim 256 --albedo_bias 0 --albedo_lr 0.002
+# "
 
-# 临时修改IFS为换行符，确保按行读取任务
-IFS='
-'
-i=0
-for task in $tasks; do
-    if [ -z "$task" ]; then continue; fi  # 跳过空行
-    gpu_id=$(echo "$gpus" | cut -d " " -f $((i % 8 + 1)))
-    task_name=$(echo "$task" | awk '{print $2}' | awk -F/ '{print $NF}')
-    log_file="${log_dir}${task_name}.log"
+# # 临时修改IFS为换行符，确保按行读取任务
+# IFS='
+# '
+# i=0
+# for task in $tasks; do
+#     if [ -z "$task" ]; then continue; fi  # 跳过空行
+#     gpu_id=$(echo "$gpus" | cut -d " " -f $((i % 8 + 1)))
+#     task_name=$(echo "$task" | awk '{print $2}' | awk -F/ '{print $NF}')
+#     log_file="${log_dir}${task_name}.log"
     
-    echo "Starting task on GPU python3 train.py $gpu_id: $task"
-    cmd="CUDA_VISIBLE_DEVICES=$gpu_id python3 train.py $task > \"$log_file\" 2>&1 &"
-    eval $cmd
+#     echo "Starting task on GPU python3 train.py $gpu_id: $task"
+#     cmd="CUDA_VISIBLE_DEVICES=$gpu_id python3 train.py $task > \"$log_file\" 2>&1 &"
+#     eval $cmd
 
-    i=$((i + 1))
-done
-IFS=' '  # 恢复默认IFS
+#     i=$((i + 1))
+# done
+# IFS=' '  # 恢复默认IFS
 
-wait
-echo "All tasks completed."
+# wait
+# echo "All tasks completed."
 
 # python train-NeRF.py -s data/nerf_synthetic/ship --eval --run_dim 64 --albedo_bias 0 --gsrgb_loss --albedo_lr 0.002 
 # python train-NeRF.py -s data/nerf_synthetic/ficus --eval --run_dim 64 --albedo_bias 0 --gsrgb_loss --albedo_lr 0.002 

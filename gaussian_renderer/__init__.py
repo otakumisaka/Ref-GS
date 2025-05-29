@@ -25,9 +25,9 @@ from utils.sph_utils import *
 # Debug
 import os
 os.environ['TORCH_USE_CUDA_DSA'] = '1'
+refract_available = True
 
-
-DIR="result/"
+DIR="result/" if not refract_available else "result_refr/"
 use_feature = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -92,10 +92,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     gs_feature = pc.get_language_feature
     gs_ior = pc.get_ior
     
+    gs_transparency = pc.get_transparency
 
     # roughness and feature set in Model? Every point refers to a roughness/feature value
     # we view ior as one of its features
-    input_ts = torch.cat([gs_roughness, gs_ior, gs_feature], dim=-1)
+    input_ts = torch.cat([gs_roughness, gs_ior, gs_transparency, gs_feature], dim=-1)
     # print(f"pc.input_ts: {input_ts.shape}, pc.gsfeat_dim: {pc.gsfeat_dim}")
     # print(f"gs_roughness: {gs_roughness.shape}, gs_feature: {gs_feature.shape}, gs_ior: {gs_ior.shape}")
     albedo_map, out_ts, radii, allmap = rasterizer_black(
@@ -145,7 +146,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     albedo_map = albedo_map.permute(1,2,0)
     roughness_map = out_ts[..., 0:1]
     ior_map = out_ts[..., 1:2]
-    feature_map = out_ts[..., 2:]
+    transparency_map = out_ts[..., 2:3]
+    feature_map = out_ts[..., 3:7]
 
     #####################################################################################################################
     
@@ -157,6 +159,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     roughness_map = roughness_map.reshape(-1, 1)[select_index]
     albedo_map = albedo_map.reshape(-1, 3)[select_index]
     ior_map = ior_map.reshape(-1, 1)[select_index]
+    transparency_map = transparency_map.reshape(-1, 1)[select_index]
     
     feature_map = feature_map.reshape(-1, pc.gsfeat_dim)[select_index]
     feature_map = F.normalize(feature_map, dim=-1)
@@ -171,19 +174,14 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     wo_xyz = torch.stack([wo_xy[:, None, :]], dim=0,)
     
     spec_level = roughness_map.reshape(-1, 1)
-
     spec_feat = pc.dir_encoding(wo_xyz, spec_level.view(-1, 1), index=0).reshape(-1, pc.sph_dim)
     spec_feat_wrap = spec_feat.reshape(-1, pc.sph_dim, 1)
     spec_feat_dirc = spec_feat.reshape(-1, pc.sph_dim)
     
     #####################################################################################################################
-    # Specular color
-    wrap_input = (spec_feat_wrap @ feature_map).reshape(-1, pc.sph_dim*pc.gsfeat_dim)
-    input_mlp = torch.cat([wrap_input, spec_feat_dirc], -1)
-    mlp_output = pc.light_mlp(input_mlp).float()
-    spec_light = torch.exp(torch.clamp(mlp_output, max=5.0))
     
-    # Refraction color
+    
+    # Refraction direction calculation
     incident_dir = viewdirs.reshape(-1, 3)[select_index]  # 从相机到表面的方向
     surface_normals = normals  # 表面法线
     
@@ -197,53 +195,70 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # Fresnel ratio 
     f0 = ((ior_values - 1.0) / (ior_values + 1.0)) ** 2  # 垂直入射时的反射率
     fresnel = fresnel_schlick(cos_theta_i, f0)
+    # decide where to go, only reflect or refract
     
-    # Sph-Mip for refraction
-    # we know wt must be non-zero if it is not total internal reflection
-    valid_refraction = ~total_reflection.squeeze(-1)
+    # Specular color
+    wrap_input = (spec_feat_wrap @ feature_map).reshape(-1, pc.sph_dim*pc.gsfeat_dim)
+    input_mlp = torch.cat([wrap_input, spec_feat_dirc], -1)
+    mlp_output = pc.light_mlp(input_mlp).float()
+    spec_light = torch.exp(torch.clamp(mlp_output, max=5.0))
     
-    if valid_refraction.sum() > 0:
-        wt_valid = wt[valid_refraction]
-        wt_xy = (cart2sph(wt_valid.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / 
-                 torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]]
-        wt_xyz = torch.stack([wt_xy[:, None, :]], dim=0)
+    
+    refract_light = torch.zeros_like(spec_light)
+    # Refraction color
+    if refract_available:
+        # Sph-Mip for refraction
+        # we know wt must be non-zero if it is not total internal reflection
+        valid_refraction = ~total_reflection.squeeze(-1)
         
-        # like spec_level
-        refract_level = roughness_map[valid_refraction].reshape(-1, 1)
-        refract_feat = pc.dir_encoding(wt_xyz, refract_level.view(-1, 1), index=0).reshape(-1, pc.sph_dim)
-        
-        refract_feat_wrap = refract_feat.reshape(-1, pc.sph_dim, 1)
-        refract_feat_dirc = refract_feat.reshape(-1, pc.sph_dim)
-        
-        # 折射光照计算
-        feature_map_valid = feature_map[valid_refraction]
-        refract_wrap_input = (refract_feat_wrap @ feature_map_valid).reshape(-1, pc.sph_dim * pc.gsfeat_dim)
-        refract_input_mlp = torch.cat([refract_wrap_input, refract_feat_dirc], -1)
-        
-        # 使用相同的MLP或可以定义专门的折射MLP
-        refract_mlp_output = pc.light_mlp(refract_input_mlp).float()
-        refract_light_valid = torch.exp(torch.clamp(refract_mlp_output, max=5.0))
-        
-        # 创建完整的折射光数组
-        refract_light = torch.zeros_like(spec_light)
-        refract_light[valid_refraction] = refract_light_valid
-    else:
-        refract_light = torch.zeros_like(spec_light)
+        if valid_refraction.sum() > 0:
+            wt_valid = wt[valid_refraction]
+            wt_xy = (cart2sph(wt_valid.reshape(-1, 3)[..., [0,1,2]])[..., 1:] / 
+                    torch.Tensor([[np.pi, 2*np.pi]]).to(device))[..., [1,0]]
+            wt_xyz = torch.stack([wt_xy[:, None, :]], dim=0)
+            
+            # like spec_level
+            refract_level = roughness_map[valid_refraction].reshape(-1, 1)
+            refract_feat = pc.dir_encoding(wt_xyz, refract_level.view(-1, 1), index=0).reshape(-1, pc.sph_dim)
+            
+            refract_feat_wrap = refract_feat.reshape(-1, pc.sph_dim, 1)
+            refract_feat_dirc = refract_feat.reshape(-1, pc.sph_dim)
+            
+            # 折射光照计算
+            feature_map_valid = feature_map[valid_refraction]
+            refract_wrap_input = (refract_feat_wrap @ feature_map_valid).reshape(-1, pc.sph_dim * pc.gsfeat_dim)
+            refract_input_mlp = torch.cat([refract_wrap_input, refract_feat_dirc], -1)
+            
+            # 使用相同的MLP或可以定义专门的折射MLP
+            refract_mlp_output = pc.refract_mlp(refract_input_mlp).float()
+            refract_light_valid = torch.exp(torch.clamp(refract_mlp_output, max=5.0))
+            
+            # 创建完整的折射光数组
+            refract_light = torch.zeros_like(spec_light)
+            refract_light[valid_refraction] = refract_light_valid
+        # else:
+        #     refract_light = torch.zeros_like(spec_light)
         
     
     # Diffuse color
     diff_light = albedo_map
-    
+
     # Refraction color
-    transparency = torch.clamp((ior_values - 1.0) / 2.0, 0.0, 1.0)  
+    transparency = transparency_map
     
-    reflection_contrib = fresnel * spec_light
-    refraction_contrib = (1.0 - fresnel) * transparency * refract_light
-    diffuse_contrib = (1.0 - transparency) * diff_light
+    diffuse_contrib = diff_light * (1.0 - transparency)  if refract_available else diff_light
+    # reflection_contrib = spec_light * (1 - fresnel)
+    reflection_contrib = spec_light * (1.0 - fresnel) * transparency if refract_available else spec_light
     
-    # pbr_rgb = spec_light + diff_light   
-    # using following calculation will take twice or 4/3 the time 
-    pbr_rgb = reflection_contrib + refraction_contrib + diffuse_contrib     
+    refraction_contrib = fresnel * refract_light
+    
+    # judge where to go
+    is_reflected = (fresnel > 0.75) | (ior_values >= 1.5)
+    # spec_contrib = torch.where(is_reflected, reflection_contrib, refraction_contrib)
+    spec_contrib = reflection_contrib + refraction_contrib if refract_available else reflection_contrib
+    # using following calculation will take twice or 4/3 the time        
+    # pbr_rgb = transparency*spec_contrib +(1- transparency)*diffuse_contrib     
+    pbr_rgb = spec_contrib + diffuse_contrib     
     pbr_rgb = linear2srgb(pbr_rgb)
     pbr_rgb = torch.clamp(pbr_rgb, min=0., max=1.)
     
@@ -261,6 +276,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         'rend_dist': render_dist,
         'surf_depth': surf_depth,
         'surf_normal': surf_normal,
+        'ior_map': ior_map,
         
         "viewspace_points": means2D,
         "visibility_filter" : radii > 0,
@@ -294,6 +310,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             torchvision.utils.save_image(output_rgb*render_alpha, DIR+"pbr_rgb.png")
             torchvision.utils.save_image(output_spec, DIR+"spec_light.png")
             torchvision.utils.save_image(output_diff, DIR+"diff_light.png")
+            
+                        
+            if refract_available:
+                output_refracted = torch.zeros(image_height, image_width, 3).to(device)
+                output_refracted.reshape(-1, 3)[select_index] = linear2srgb(refract_light)
+                output_refracted = output_refracted.permute(2, 0, 1)
+                torchvision.utils.save_image(output_refracted, DIR+"refract_light.png")
 
     
     return rets
@@ -516,6 +539,7 @@ def render_nerf(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
             torchvision.utils.save_image(output_rgb*render_alpha, DIR+"pbr_rgb.png")
             torchvision.utils.save_image(output_spec, DIR+"spec_light.png")
             torchvision.utils.save_image(output_diff, DIR+"diff_light.png")
+
             
     return rets
 

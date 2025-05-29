@@ -29,13 +29,9 @@ setup(
             "ext.cpp"],
             extra_compile_args={"nvcc": [
                 "-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/"),
-                "-Xcompiler", "-fPIC",
-                "-lineinfo",                    # 保留行号信息
-                "-keep",                        # 保留所有中间产物（包含 .i, .ptx, .s, .cubin）
-                "-save-temps",                 # 保留临时文件
                 ]})
         ],
     cmdclass={
-        'build_ext': BuildExtension
+        'build_ext': BuildExtension,
     }
 )

@@ -14,7 +14,7 @@
 
 #define NUM_CHANNELS 3 // Default 3, RGB
 // #define NUM_CHANNELS_language_feature 5 // CLIP_feature
-#define NUM_CHANNELS_language_feature 6 // Adding IoR feature
+#define NUM_CHANNELS_language_feature 7 // Adding IoR feature && transparency feature
 #define BLOCK_X 16
 #define BLOCK_Y 16
 

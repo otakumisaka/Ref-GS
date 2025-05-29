@@ -106,6 +106,7 @@ class GaussianModel:
         self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self._ior = torch.empty(0) # for refraction
+        self._transparency = torch.empty(0) # for transparency
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
@@ -139,12 +140,28 @@ class GaussianModel:
         ).cuda()
         nn.init.constant_(self.light_mlp[-1].bias, np.log(0.25))
         
+        self.refract_mlp = nn.Sequential(
+            nn.Linear(self.sph_dim * self.gsfeat_dim + self.sph_dim, run_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(run_dim, run_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(run_dim, 3),
+        ).cuda()
+        nn.init.constant_(self.refract_mlp[-1].bias, np.log(0.25))
+        
         self.light_mlp2 = nn.Sequential(
             nn.Linear(self.sph_dim * self.gsfeat_dim + self.sph_dim, run_dim//2),
             nn.ReLU(inplace=True),
             nn.Linear(run_dim//2, 3),
         ).cuda()
         nn.init.constant_(self.light_mlp[-1].bias, np.log(0.25))
+
+        # self.refract_mlp2 = nn.Sequential(
+        #     nn.Linear(self.sph_dim * self.gsfeat_dim + self.sph_dim, run_dim // 2),
+        #     nn.ReLU(inplace = True)
+        #     nn.Linear(run_dim // 2, 3),
+        # ).cuda()
+        # nn.init.constant_(self.refract_mlp[-1].bias, np.log(0.25))
 
     def clone_subset(self, start: int, end: int):
         """Clone a subset of the point cloud from index start to end."""
@@ -167,6 +184,7 @@ class GaussianModel:
         new_model.max_radii2D = self.max_radii2D[start:end].detach().clone()
         new_model.spatial_lr_scale = self.spatial_lr_scale
         new_model.light_mlp = self.light_mlp
+        new_model.refract_mlp = self.refract_mlp
         new_model.dir_encoding = self.dir_encoding
 
         return new_model
@@ -189,6 +207,7 @@ class GaussianModel:
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
             self._ior,
+            self._transparency,
         )
     
     def restore(self, model_args, training_args):
@@ -204,7 +223,8 @@ class GaussianModel:
         denom,
         opt_dict, 
         self.spatial_lr_scale,
-        self._ior) = model_args
+        self._ior,
+        self._transparency) = model_args
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -253,6 +273,9 @@ class GaussianModel:
     @property
     def get_ior(self):
         return torch.sigmoid(self._ior) + 1.0 # ior is set to be n1/n2, so we add 1.0 to make it > 1.0
+    @property
+    def get_transparency(self):
+        return torch.clamp(self._transparency, min=0.0, max=1.0)
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_xyz, self.get_scaling, scaling_modifier, self._rotation)
@@ -278,6 +301,7 @@ class GaussianModel:
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
         # TODO: apply varying ior, now all of them set to 1
         iors = torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
+        transparencies = torch.zeros((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
@@ -285,6 +309,8 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self._ior = nn.Parameter(iors.requires_grad_(True))
+        self._transparency = nn.Parameter(transparencies.requires_grad_(True))
+        
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         
         self._albedo = nn.Parameter(torch.zeros((fused_point_cloud.shape[0], 3), device="cuda").requires_grad_(True)-self.albedo_bias)
@@ -311,8 +337,10 @@ class GaussianModel:
             {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness"},
             {'params': [self._mask], 'lr': training_args.mask_lr, "name": "mask"},
             {'params': [self._ior], 'lr': training_args.ior_lr, "name": "ior"},
+            {'params': [self._transparency], 'lr': training_args.transparency_lr, "name": "transparency"},
             {'params': [self._language_feature], 'lr': training_args.feature_lr, "name": "feature"},
             {'params': list(self.light_mlp.parameters()), 'lr': training_args.mlp_lr, "name": "light_mlp"},
+            {'params': list(self.refract_mlp.parameters()), 'lr': training_args.refr_mlp_lr, "name":"refract_mlp"},
             {'params': list(self.dir_encoding.parameters()), 'lr': training_args.encoding_lr, "name": "dir_encoding"},
         ])
         
@@ -357,6 +385,7 @@ class GaussianModel:
             l.append('feature_{}'.format(i))
             
         l.append('ior') # per point refraction index
+        l.append('transparency') # per point transparency
             
         return l
 
@@ -370,6 +399,7 @@ class GaussianModel:
         
         opacities = self._opacity.detach().cpu().numpy()
         iors = self._ior.detach().cpu().numpy()
+        transparencies = self._transparency.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
@@ -384,12 +414,13 @@ class GaussianModel:
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         # add attributes to the tail
         # the attribute order matches construct_list_of_attributes
-        attributes = np.concatenate((xyz, f_dc, f_rest, opacities, scale, rotation, roughness, mask, albedo, language_feature, iors), axis=1)
+        attributes = np.concatenate((xyz, f_dc, f_rest, opacities, scale, rotation, roughness, mask, albedo, language_feature, iors, transparencies), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
         
         torch.save(self.light_mlp, path.split('point_cloud.ply')[0]+'/light_mlp.pt')
+        torch.save(self.refract_mlp, path.split('point_cloud.ply')[0]+'/refract_mlp.pt')
         torch.save(self.dir_encoding, path.split('point_cloud.ply')[0]+'/dir_encoding.pt')
     
     
@@ -421,6 +452,7 @@ class GaussianModel:
         
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
         iors = np.asarray(plydata.elements[0]["ior"])[..., np.newaxis]
+        transparencies = np.asarray(plydata.elements[0]["transparency"])[..., np.newaxis]
         
         features_dc = np.zeros((xyz.shape[0], 3, 1))
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
@@ -488,9 +520,10 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         
         # TODO: load ior if available 
-        self._ior  = nn.Parameter(torch.Tensor(iors, dtype=torch.float, device="cuda").requires_grad_(True))
-
+        self._ior  = nn.Parameter(torch.tensor(iors, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._transparency = nn.Parameter(torch.tensor(transparencies, dtype=torch.float, device="cuda").requires_grad_(True))
         self.light_mlp =  torch.load(path.split('point_cloud.ply')[0]+'/light_mlp.pt')
+        self.refract_mlp =  torch.load(path.split('point_cloud.ply')[0]+'/refract_mlp.pt')
         self.dir_encoding =  torch.load(path.split('point_cloud.ply')[0]+'/dir_encoding.pt')
         print('Load Path', path)
 
@@ -499,6 +532,8 @@ class GaussianModel:
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == "light_mlp" or group["name"] == "dir_encoding":
+                continue
+            if group["name"] == "refract_mlp" or group["name" ] == 'direncoding':
                 continue
                 
             if group["name"] == name:
@@ -517,6 +552,8 @@ class GaussianModel:
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == "light_mlp" or group["name"] == "dir_encoding":
+                continue
+            if group["name"] == "refract_mlp" or group["name"] == "dir_encoding":
                 continue
                 
             stored_state = self.optimizer.state.get(group['params'][0], None)
@@ -556,11 +593,14 @@ class GaussianModel:
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         self._ior = optimizable_tensors["ior"]
+        self._transparency = optimizable_tensors["transparency"]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == "light_mlp" or group["name"] == "dir_encoding":
+                continue
+            if group["name"] == "refract_mlp" or group["name"] == "dir_encoding":
                 continue
                 
             assert len(group["params"]) == 1
@@ -585,7 +625,7 @@ class GaussianModel:
     def densification_postfix(
         self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation,
         new_albedo, new_mask, new_roughness,
-        new_language_feature, new_ior
+        new_language_feature, new_ior,new_transparency
     ):
         d = {
             "xyz": new_xyz,
@@ -600,7 +640,8 @@ class GaussianModel:
             "roughness" : new_roughness,
             
             "feature" : new_language_feature,
-            "ior": new_ior
+            "ior": new_ior,
+            "transparency" : new_transparency # Initialize transparency to zeros
         }
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
@@ -617,6 +658,7 @@ class GaussianModel:
         
         self._language_feature = optimizable_tensors["feature"]
         self._ior = optimizable_tensors["ior"]
+        self._transparency = optimizable_tensors["transparency"]
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -642,6 +684,7 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_ior = self._ior[selected_pts_mask].repeat(N,1)
+        new_transparency = self._transparency[selected_pts_mask].repeat(N,1)
         new_albedo = self._albedo[selected_pts_mask].repeat(N,1)
         new_mask = self._mask[selected_pts_mask].repeat(N,1)
         new_roughness = self._roughness[selected_pts_mask].repeat(N,1)
@@ -652,7 +695,8 @@ class GaussianModel:
             new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation,
             new_albedo, new_mask, new_roughness,
             new_language_feature,
-            new_ior
+            new_ior,
+            new_transparency
         )
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
@@ -677,11 +721,13 @@ class GaussianModel:
         
         new_language_feature = self._language_feature[selected_pts_mask]
         new_ior = self._ior[selected_pts_mask]
+        new_transparency = self._transparency[selected_pts_mask]
 
         self.densification_postfix(
             new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation,
             new_albedo, new_mask, new_roughness,
-            new_language_feature, new_ior
+            new_language_feature, new_ior,
+            new_transparency
         )
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
